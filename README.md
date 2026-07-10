@@ -18,15 +18,22 @@ pip install fastmcp keyring cryptography
 
 ## Setup (one-time)
 
-Set the OAuth `client_id` you want to authenticate as — reuse the one an existing MCP client (Claude Code, OMP, etc.) already uses for its Slack integration (check its `mcp.json` or equivalent config), since that client_id is likely already consented on your workspace:
+Configure the OAuth `client_id` you want to authenticate as — reuse the one an existing MCP client (Claude Code, OMP, etc.) already uses for its Slack integration (check its `mcp.json` or equivalent config), since that client_id is likely already consented on your workspace. Either an env var:
 
 ```bash
 export SLACK_MCP_CLIENT_ID=<your-client-id>
 ```
 
+or a `.slack.conf` file in the repo root (gitignored, never commit it):
+
+```ini
+[slack]
+client_id = <your-client-id>
+```
+
 The first run then opens a browser for OAuth consent against that client_id. After that, the token is cached to an encrypted disk store (`~/.fastmcp/oauth-tokens/slack/`, encryption key held in your OS keyring under the service `fastmcp-slack-wrapper`) — every later run is silent.
 
-**Gotcha:** Slack's OAuth app registration only allows a fixed, pre-registered `redirect_uri`. This defaults to `callback_port=3118` — a mismatched port fails with `redirect_uri did not match any configured URIs`. If your MCP client uses a different callback port for this client_id, set `SLACK_MCP_CALLBACK_PORT` to match it.
+**Gotcha:** Slack's OAuth app registration only allows a fixed, pre-registered `redirect_uri`. This defaults to `callback_port=3118` — a mismatched port fails with `redirect_uri did not match any configured URIs`. If your MCP client uses a different callback port for this client_id, set `SLACK_MCP_CALLBACK_PORT` (env var or `callback_port` in `.slack.conf`) to match it.
 
 ## Usage
 
@@ -50,15 +57,16 @@ python scripts/read_channel.py C0123456789 --oldest 1783440000.000000 --json
 # Read a thread
 python scripts/read_thread.py C0123456789 1783440000.000000
 
-# Export everything you've sent
-python scripts/export_my_messages.py --out messages.json --start-days-ago 365 --window-days 14
+# Export mode: walk any query across a long time range, writing incrementally to JSON
+python scripts/search.py "from:me" --private --export messages.json --start-days-ago 365
+python scripts/search.py "in:#general" --export general.json --window-days 7
 ```
 
 All of Slack's [search modifiers](https://slack.com/help/articles/202528808) work in the query string: `in:`, `from:`, `after:`, `before:`, `is:thread`, `has:pin`, `type:pdfs`, etc.
 
-### Exporting your own message history
+### Export mode
 
-There's no official Slack bulk-export API available to a non-admin workspace member — full self-serve export is Enterprise-org-owner-only. `export_my_messages.py` works around this using `from:me` plus the search API, but the Slack MCP server itself caps cursor pagination at 20 pages (~400 messages) per continuous search session before raising `page_limit_exceeded`. To get deeper history, the script walks backward through fixed-size date windows (`before`/`after` on the message timestamp) — each window gets its own fresh cursor walk, and results are merged/deduplicated across windows.
+There's no official Slack bulk-export API available to a non-admin workspace member — full self-serve export is Enterprise-org-owner-only. `--export` works around this by re-running your query across fixed-size date windows (`before`/`after` on the message timestamp) instead of one continuous search — necessary because the Slack MCP server itself caps cursor pagination at 20 pages (~400 messages) per continuous search session before raising `page_limit_exceeded`. Each window gets its own fresh cursor walk, and results are merged/deduplicated across windows.
 
 The output file is written after **every** window, not just at the end (`"complete": false` while running, `true` once finished) — safe to interrupt at any point without losing already-fetched data.
 
