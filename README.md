@@ -62,6 +62,16 @@ python scripts/search.py "from:me" --private --export messages.json --start-days
 python scripts/search.py "in:#general" --export general.json --window-days 7
 ```
 
+### HTML presentation mode
+
+Any of the three read/search scripts accept `--html PATH` instead of printing text — it parses the same "detailed" markdown output into a self-contained HTML page (one card per message, clickable Slack permalinks that Slack's own redirect page forwards into the desktop app when installed) and opens it in the default browser. This is the preferred way for a human OR an agent to review results — raw MCP markdown output is machine-readable but not human-readable (unrendered `[link](url)` markdown, no visual separation between messages):
+
+```bash
+python scripts/search.py "deploy failure" --html /tmp/results.html
+python scripts/read_channel.py C0123456789 --limit 20 --html /tmp/channel.html
+python scripts/read_thread.py C0123456789 1783440000.000000 --html /tmp/thread.html
+```
+
 All of Slack's [search modifiers](https://slack.com/help/articles/202528808) work in the query string: `in:`, `from:`, `after:`, `before:`, `is:thread`, `has:pin`, `type:pdfs`, etc.
 
 ### Export mode

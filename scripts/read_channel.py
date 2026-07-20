@@ -16,9 +16,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from slack_client import get_client  # noqa: E402
+from render import write_html  # noqa: E402
 
 
-async def run(channel_id: str, limit: int, oldest: str | None, latest: str | None, as_json: bool) -> None:
+async def run(channel_id: str, limit: int, oldest: str | None, latest: str | None, as_json: bool, html_path: str | None) -> None:
     args = {"channel_id": channel_id, "limit": limit, "response_format": "detailed"}
     if oldest:
         args["oldest"] = oldest
@@ -35,7 +36,13 @@ async def run(channel_id: str, limit: int, oldest: str | None, latest: str | Non
         print(json.dumps(payload, indent=2))
         return
 
-    print(payload.get("results", raw_text))
+    results = payload.get("results", raw_text)
+    if html_path:
+        out = write_html(f"Slack channel: {channel_id}", results, Path(html_path))
+        print(f"Wrote {out}", file=sys.stderr)
+        return
+
+    print(results)
 
 
 def main() -> None:
@@ -45,8 +52,9 @@ def main() -> None:
     parser.add_argument("--oldest", help="Start timestamp filter")
     parser.add_argument("--latest", help="End timestamp filter")
     parser.add_argument("--json", action="store_true", help="Emit raw JSON instead of formatted text")
+    parser.add_argument("--html", metavar="PATH", help="Render results as a clickable HTML page and open it (instead of printing text)")
     args = parser.parse_args()
-    asyncio.run(run(args.channel_id, args.limit, args.oldest, args.latest, args.json))
+    asyncio.run(run(args.channel_id, args.limit, args.oldest, args.latest, args.json, args.html))
 
 
 if __name__ == "__main__":
