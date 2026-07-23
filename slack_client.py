@@ -79,13 +79,6 @@ if not SLACK_CLIENT_ID:
 
 SLACK_CALLBACK_PORT = int(os.environ.get("SLACK_MCP_CALLBACK_PORT") or _config.get("callback_port") or "3118")  # must match the allowlisted redirect_uri
 
-# Local warm-proxy daemon (slackd.py): holds ONE persistent OAuth'd upstream
-# connection to the remote Slack MCP and re-serves it over loopback, so CLI
-# calls avoid a fresh TLS+OAuth+initialize handshake to mcp.slack.com each time.
-SLACK_PROXY_HOST = os.environ.get("SLACK_PROXY_HOST") or _config.get("proxy_host") or "127.0.0.1"
-SLACK_PROXY_PORT = int(os.environ.get("SLACK_PROXY_PORT") or _config.get("proxy_port") or "3119")
-SLACK_PROXY_URL = f"http://{SLACK_PROXY_HOST}:{SLACK_PROXY_PORT}/mcp"
-
 _TOKEN_DIR = pathlib.Path.home() / ".fastmcp" / "oauth-tokens" / "slack"
 _KEYRING_SERVICE = "fastmcp-slack-wrapper"
 _KEYRING_USER = "oauth-encryption-key"
@@ -125,55 +118,10 @@ def get_client() -> Client:
 
     First call opens a browser for one-time consent; subsequent calls reuse
     the cached, encrypted token silently. Each `async with` opens a fresh
-    remote connection (TLS + MCP initialize). For repeated CLI calls prefer
-    `get_cli_client()`, which reuses a warm local proxy when the daemon is up.
-    The proxy daemon (`slackd.py`) itself MUST use this direct client.
+    remote connection (TLS + MCP initialize). For repeated/CLI calls prefer the
+    `slack_call` facade, which routes through the warm local proxy (`slackd.py`)
+    over stdlib `raw_mcp` and falls back to this direct client when it's down.
     """
     return Client(SLACK_MCP_URL, auth=_make_oauth())
 
 
-def _local_proxy_up() -> bool:
-    """Cheap loopback probe: is the local Slack MCP proxy accepting connections?"""
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.15)
-        return sock.connect_ex((SLACK_PROXY_HOST, SLACK_PROXY_PORT)) == 0
-
-
-def _ensure_proxy_started() -> None:
-    """Lazily spawn slackd.py as a DETACHED daemon if it isn't already up.
-
-    Mirrors ~/tools/shorten.py's self-healing pattern: the first CLI call that
-    finds the port closed starts the daemon (surviving this process's exit, no
-    console window), so it's "always running" thereafter and self-heals if it
-    ever dies. Non-blocking — we don't wait for boot; the spawning call itself
-    goes direct and the daemon is warm for the next call."""
-    import subprocess
-    daemon = os.path.join(os.path.dirname(__file__), "scripts", "slackd.py")
-    flags = 0
-    if os.name == "nt":
-        flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-    try:
-        subprocess.Popen(
-            [sys.executable, daemon],
-            creationflags=flags,
-            close_fds=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass  # best-effort; direct fallback still works
-
-
-def get_cli_client() -> Client:
-    """Client for CLI wrappers. Prefers the warm local proxy (loopback, no TLS/OAuth
-    per call); if the proxy daemon isn't running, lazily auto-starts it (detached,
-    self-healing — like the URL-shortener server) and serves THIS call directly so
-    there's no boot wait. Set SLACK_NO_LOCAL_PROXY=1 to force direct and skip autostart."""
-    if os.environ.get("SLACK_NO_LOCAL_PROXY"):
-        return get_client()
-    if _local_proxy_up():
-        return Client(SLACK_PROXY_URL)
-    _ensure_proxy_started()
-    return get_client()

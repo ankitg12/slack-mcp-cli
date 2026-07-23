@@ -21,38 +21,33 @@ slack_search_channels, slack_search_users, slack_search_emojis, slack_read_chann
 slack_read_thread, slack_read_user_profile, slack_list_channel_members, slack_read_file.
 """
 import argparse
-import asyncio
 import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from slack_client import get_cli_client  # noqa: E402
+from slack_call import call_tool, list_tools  # noqa: E402
 
 
-async def run_list(as_json: bool) -> None:
-    async with get_cli_client() as client:
-        tools = await client.list_tools()
+def run_list(as_json: bool) -> None:
+    tools = list_tools()
     if as_json:
-        print(json.dumps([{"name": t.name, "description": t.description, "input_schema": t.inputSchema} for t in tools], indent=2))
+        print(json.dumps(tools, indent=2))
         return
     for t in tools:
-        params = ", ".join((t.inputSchema or {}).get("properties", {}).keys())
-        print(f"{t.name}({params})\n    {(t.description or '').strip().splitlines()[0] if t.description else ''}")
+        params = ", ".join((t.get("inputSchema") or {}).get("properties", {}).keys())
+        desc = (t.get("description") or "").strip()
+        first = desc.splitlines()[0] if desc else ""
+        print(f"{t['name']}({params})\n    {first}")
 
 
-async def run_call(tool: str, raw_args: str, as_json: bool) -> None:
+def run_call(tool: str, raw_args: str, as_json: bool) -> None:
     try:
         args = json.loads(raw_args) if raw_args else {}
     except json.JSONDecodeError as exc:
         sys.exit(f"Invalid JSON for tool args: {exc}")
-    # Default to detailed responses (guarantees permalinks) unless caller overrode it.
-    args.setdefault("response_format", "detailed")
 
-    async with get_cli_client() as client:
-        result = await client.call_tool(tool, args)
-
-    raw_text = result.content[0].text if result.content else "{}"
+    raw_text = call_tool(tool, args)
     if as_json:
         try:
             print(json.dumps(json.loads(raw_text), indent=2))
@@ -80,9 +75,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.cmd == "list":
-        asyncio.run(run_list(args.json))
+        run_list(args.json)
     else:
-        asyncio.run(run_call(args.tool, args.args, args.json))
+        run_call(args.tool, args.args, args.json)
 
 
 if __name__ == "__main__":

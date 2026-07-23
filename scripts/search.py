@@ -28,7 +28,6 @@ already-fetched data:
     python search.py "in:#general" --export general.json --window-days 7
 """
 import argparse
-import asyncio
 import json
 import re
 import sys
@@ -36,8 +35,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from slack_client import get_cli_client  # noqa: E402
-from render import write_html  # noqa: E402
+from slack_call import caller  # noqa: E402
 
 MAX_PER_PAGE = 20  # hard cap enforced by the Slack MCP server's `limit` param
 MAX_PAGES_PER_WINDOW = 19  # server raises page_limit_exceeded at page 20
@@ -73,16 +71,14 @@ def _parse_results_block(markdown: str) -> list[dict]:
     return records
 
 
-async def _run_search(client, tool: str, query: str, limit: int, content_types: str) -> dict:
-    args = {"query": query, "limit": limit, "response_format": "detailed"}
+def _run_search(call, tool: str, query: str, limit: int, content_types: str) -> dict:
+    args = {"query": query, "limit": limit}
     if content_types:
         args["content_types"] = content_types
-    result = await client.call_tool(tool, args)
-    raw_text = result.content[0].text if result.content else "{}"
-    return json.loads(raw_text)
+    return json.loads(call(tool, args))
 
 
-async def _search_window(client, tool: str, query: str, after_ts: float | None, before_ts: float | None) -> tuple[list[dict], bool]:
+def _search_window(call, tool: str, query: str, after_ts: float | None, before_ts: float | None) -> tuple[list[dict], bool]:
     """Run one windowed search, paging until exhausted or MAX_PAGES_PER_WINDOW.
 
     Returns (records, hit_page_limit).
@@ -105,8 +101,7 @@ async def _search_window(client, tool: str, query: str, after_ts: float | None, 
         if before_ts:
             args["before"] = str(before_ts)
 
-        result = await client.call_tool(tool, args)
-        payload = json.loads(result.content[0].text)
+        payload = json.loads(call(tool, args))
         markdown = payload.get("results", "")
         batch = _parse_results_block(markdown)
         records.extend(batch)
@@ -141,7 +136,7 @@ def _write_export(out_path: Path, query: str, all_records: dict, start_days_ago:
     )
 
 
-async def run_export(tool: str, query: str, out_path: Path, start_days_ago: int, window_days: int) -> None:
+def run_export(tool: str, query: str, out_path: Path, start_days_ago: int, window_days: int) -> None:
     now = time.time()
     window_seconds = window_days * 86400
     window_end = now
@@ -151,10 +146,10 @@ async def run_export(tool: str, query: str, out_path: Path, start_days_ago: int,
     oldest_start = now - (start_days_ago * 86400)
     window_num = 0
 
-    async with get_cli_client() as client:
+    with caller() as call:
         while window_end > oldest_start:
             window_num += 1
-            records, hit_limit = await _search_window(client, tool, query, after_ts=window_start, before_ts=window_end)
+            records, hit_limit = _search_window(call, tool, query, after_ts=window_start, before_ts=window_end)
             for r in records:
                 all_records[f"{r['channel']}|{r['message_ts']}"] = r
 
@@ -180,9 +175,9 @@ async def run_export(tool: str, query: str, out_path: Path, start_days_ago: int,
     print(f"Done. Wrote {len(all_records)} unique messages to {out_path}", file=sys.stderr)
 
 
-async def run_search(tool: str, query: str, limit: int, content_types: str, as_json: bool, html_path: str | None) -> None:
-    async with get_cli_client() as client:
-        payload = await _run_search(client, tool, query, limit, content_types)
+def run_search(tool: str, query: str, limit: int, content_types: str, as_json: bool, html_path: str | None) -> None:
+    with caller() as call:
+        payload = _run_search(call, tool, query, limit, content_types)
 
     if as_json:
         print(json.dumps(payload, indent=2))
@@ -190,6 +185,7 @@ async def run_search(tool: str, query: str, limit: int, content_types: str, as_j
 
     results = payload.get("results", "")
     if html_path:
+        from render import write_html
         out = write_html(f"Slack search: {query}", results, Path(html_path))
         print(f"Wrote {out}", file=sys.stderr)
         return
@@ -213,9 +209,9 @@ def main() -> None:
     tool = "slack_search_public_and_private" if args.private else "slack_search_public"
 
     if args.export:
-        asyncio.run(run_export(tool, args.query, Path(args.export).expanduser(), args.start_days_ago, args.window_days))
+        run_export(tool, args.query, Path(args.export).expanduser(), args.start_days_ago, args.window_days)
     else:
-        asyncio.run(run_search(tool, args.query, args.limit, args.content_types, args.json, args.html))
+        run_search(tool, args.query, args.limit, args.content_types, args.json, args.html)
 
 
 if __name__ == "__main__":

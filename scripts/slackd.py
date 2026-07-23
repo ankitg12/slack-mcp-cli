@@ -3,13 +3,13 @@
 
 Holds ONE persistent, OAuth'd upstream connection to the remote Slack MCP
 (`https://mcp.slack.com/mcp`) and re-serves the identical tool surface over
-loopback HTTP (`http://127.0.0.1:3119/mcp`). CLI wrappers (`get_cli_client()`)
-then connect to loopback — no per-call TLS handshake, no OAuth token load, no
-WAN round-trip to Slack. The expensive setup happens once, here, and stays warm.
+loopback HTTP (`http://127.0.0.1:3119/mcp`). CLI wrappers (via `slack_call` /
+`raw_mcp`) then connect to loopback — no per-call TLS handshake, no OAuth token
+load, no WAN round-trip to Slack. The expensive setup happens once, here, warm.
 
-Built on FastMCP's first-class proxy (`create_proxy` + `StatefulProxyClient`) —
-no bespoke protocol code. The StatefulProxyClient keeps the upstream MCP session
-alive and reuses it across incoming requests.
+Built on FastMCP's first-class proxy (`create_proxy`). We connect ONE client and
+keep it entered for the daemon's lifetime; FastMCP's Client is reentrant, and
+create_proxy() reuses an already-connected client's session across all requests.
 
 Run (foreground):   python slackd.py
 Run (via hub):      hub start name=slackd application=python args=[".../slackd.py"] ready.log="Uvicorn running" ready.port=3119
@@ -22,11 +22,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import asyncio  # noqa: E402
 from fastmcp.server import create_proxy  # noqa: E402
-from slack_client import (  # noqa: E402
-    SLACK_PROXY_HOST,
-    SLACK_PROXY_PORT,
-    get_client,
-)
+import slack_proxy  # noqa: E402
+from slack_client import get_client  # noqa: E402
 
 
 async def main() -> None:
@@ -41,12 +38,12 @@ async def main() -> None:
     async with client:
         proxy = create_proxy(client, name="slack-warm-proxy")
         print(
-            f"slackd: warm Slack MCP proxy -> http://{SLACK_PROXY_HOST}:{SLACK_PROXY_PORT}/mcp "
+            f"slackd: warm Slack MCP proxy -> {slack_proxy.URL} "
             f"(one persistent upstream OAuth session, reused across calls; Ctrl+C to stop)",
             file=sys.stderr,
             flush=True,
         )
-        await proxy.run_async(transport="http", host=SLACK_PROXY_HOST, port=SLACK_PROXY_PORT)
+        await proxy.run_async(transport="http", host=slack_proxy.HOST, port=slack_proxy.PORT)
 
 
 if __name__ == "__main__":
