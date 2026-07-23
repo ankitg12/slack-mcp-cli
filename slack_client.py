@@ -79,6 +79,13 @@ if not SLACK_CLIENT_ID:
 
 SLACK_CALLBACK_PORT = int(os.environ.get("SLACK_MCP_CALLBACK_PORT") or _config.get("callback_port") or "3118")  # must match the allowlisted redirect_uri
 
+# Local warm-proxy daemon (slackd.py): holds ONE persistent OAuth'd upstream
+# connection to the remote Slack MCP and re-serves it over loopback, so CLI
+# calls avoid a fresh TLS+OAuth+initialize handshake to mcp.slack.com each time.
+SLACK_PROXY_HOST = os.environ.get("SLACK_PROXY_HOST") or _config.get("proxy_host") or "127.0.0.1"
+SLACK_PROXY_PORT = int(os.environ.get("SLACK_PROXY_PORT") or _config.get("proxy_port") or "3119")
+SLACK_PROXY_URL = f"http://{SLACK_PROXY_HOST}:{SLACK_PROXY_PORT}/mcp"
+
 _TOKEN_DIR = pathlib.Path.home() / ".fastmcp" / "oauth-tokens" / "slack"
 _KEYRING_SERVICE = "fastmcp-slack-wrapper"
 _KEYRING_USER = "oauth-encryption-key"
@@ -102,16 +109,41 @@ def _token_storage() -> FernetEncryptionWrapper:
     )
 
 
-def get_client() -> Client:
-    """Return a FastMCP Client for the Slack MCP server with persistent OAuth.
 
-    First call opens a browser for one-time consent; subsequent calls reuse
-    the cached, encrypted token silently.
-    """
-    oauth = OAuth(
+def _make_oauth() -> OAuth:
+    """Build the shared OAuth handler (persistent, Fernet-encrypted token cache)."""
+    return OAuth(
         mcp_url=SLACK_MCP_URL,
         client_id=SLACK_CLIENT_ID,
         token_storage=_token_storage(),
         callback_port=SLACK_CALLBACK_PORT,
     )
-    return Client(SLACK_MCP_URL, auth=oauth)
+
+
+def get_client() -> Client:
+    """Return a FastMCP Client connected DIRECTLY to the remote Slack MCP with persistent OAuth.
+
+    First call opens a browser for one-time consent; subsequent calls reuse
+    the cached, encrypted token silently. Each `async with` opens a fresh
+    remote connection (TLS + MCP initialize). For repeated CLI calls prefer
+    `get_cli_client()`, which reuses a warm local proxy when the daemon is up.
+    The proxy daemon (`slackd.py`) itself MUST use this direct client.
+    """
+    return Client(SLACK_MCP_URL, auth=_make_oauth())
+
+
+def _local_proxy_up() -> bool:
+    """Cheap loopback probe: is the local Slack MCP proxy accepting connections?"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.15)
+        return sock.connect_ex((SLACK_PROXY_HOST, SLACK_PROXY_PORT)) == 0
+
+
+def get_cli_client() -> Client:
+    """Client for CLI wrappers. Prefers the warm local proxy (loopback, no TLS/OAuth
+    per call) when `slackd.py` is running; falls back to a direct remote client otherwise.
+    Set SLACK_NO_LOCAL_PROXY=1 to force direct."""
+    if not os.environ.get("SLACK_NO_LOCAL_PROXY") and _local_proxy_up():
+        return Client(SLACK_PROXY_URL)
+    return get_client()

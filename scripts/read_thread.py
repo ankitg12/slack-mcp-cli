@@ -14,12 +14,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from slack_client import get_client  # noqa: E402
+from slack_client import get_cli_client  # noqa: E402
 from render import write_html  # noqa: E402
 
 
 async def run(channel_id: str, message_ts: str, as_json: bool, html_path: str | None) -> None:
-    async with get_client() as client:
+    async with get_cli_client() as client:
         result = await client.call_tool(
             "slack_read_thread",
             {"channel_id": channel_id, "message_ts": message_ts, "response_format": "detailed"},

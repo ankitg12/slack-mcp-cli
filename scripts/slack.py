@@ -27,11 +27,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from slack_client import get_client  # noqa: E402
+from slack_client import get_cli_client  # noqa: E402
 
 
 async def run_list(as_json: bool) -> None:
-    async with get_client() as client:
+    async with get_cli_client() as client:
         tools = await client.list_tools()
     if as_json:
         print(json.dumps([{"name": t.name, "description": t.description, "input_schema": t.inputSchema} for t in tools], indent=2))
@@ -49,7 +49,7 @@ async def run_call(tool: str, raw_args: str, as_json: bool) -> None:
     # Default to detailed responses (guarantees permalinks) unless caller overrode it.
     args.setdefault("response_format", "detailed")
 
-    async with get_client() as client:
+    async with get_cli_client() as client:
         result = await client.call_tool(tool, args)
 
     raw_text = result.content[0].text if result.content else "{}"

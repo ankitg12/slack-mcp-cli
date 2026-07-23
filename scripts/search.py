@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from slack_client import get_client  # noqa: E402
+from slack_client import get_cli_client  # noqa: E402
 from render import write_html  # noqa: E402
 
 MAX_PER_PAGE = 20  # hard cap enforced by the Slack MCP server's `limit` param
@@ -151,7 +151,7 @@ async def run_export(tool: str, query: str, out_path: Path, start_days_ago: int,
     oldest_start = now - (start_days_ago * 86400)
     window_num = 0
 
-    async with get_client() as client:
+    async with get_cli_client() as client:
         while window_end > oldest_start:
             window_num += 1
             records, hit_limit = await _search_window(client, tool, query, after_ts=window_start, before_ts=window_end)
@@ -181,7 +181,7 @@ async def run_export(tool: str, query: str, out_path: Path, start_days_ago: int,
 
 
 async def run_search(tool: str, query: str, limit: int, content_types: str, as_json: bool, html_path: str | None) -> None:
-    async with get_client() as client:
+    async with get_cli_client() as client:
         payload = await _run_search(client, tool, query, limit, content_types)
 
     if as_json:
