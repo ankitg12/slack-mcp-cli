@@ -140,10 +140,40 @@ def _local_proxy_up() -> bool:
         return sock.connect_ex((SLACK_PROXY_HOST, SLACK_PROXY_PORT)) == 0
 
 
+def _ensure_proxy_started() -> None:
+    """Lazily spawn slackd.py as a DETACHED daemon if it isn't already up.
+
+    Mirrors ~/tools/shorten.py's self-healing pattern: the first CLI call that
+    finds the port closed starts the daemon (surviving this process's exit, no
+    console window), so it's "always running" thereafter and self-heals if it
+    ever dies. Non-blocking — we don't wait for boot; the spawning call itself
+    goes direct and the daemon is warm for the next call."""
+    import subprocess
+    daemon = os.path.join(os.path.dirname(__file__), "scripts", "slackd.py")
+    flags = 0
+    if os.name == "nt":
+        flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+    try:
+        subprocess.Popen(
+            [sys.executable, daemon],
+            creationflags=flags,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass  # best-effort; direct fallback still works
+
+
 def get_cli_client() -> Client:
     """Client for CLI wrappers. Prefers the warm local proxy (loopback, no TLS/OAuth
-    per call) when `slackd.py` is running; falls back to a direct remote client otherwise.
-    Set SLACK_NO_LOCAL_PROXY=1 to force direct."""
-    if not os.environ.get("SLACK_NO_LOCAL_PROXY") and _local_proxy_up():
+    per call); if the proxy daemon isn't running, lazily auto-starts it (detached,
+    self-healing — like the URL-shortener server) and serves THIS call directly so
+    there's no boot wait. Set SLACK_NO_LOCAL_PROXY=1 to force direct and skip autostart."""
+    if os.environ.get("SLACK_NO_LOCAL_PROXY"):
+        return get_client()
+    if _local_proxy_up():
         return Client(SLACK_PROXY_URL)
+    _ensure_proxy_started()
     return get_client()
