@@ -13,7 +13,6 @@ Usage:
     python read_message.py C0123456789 1784802006.076149   # channel_id + ts form
 """
 import argparse
-import asyncio
 import json
 import re
 import sys
@@ -21,8 +20,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from slack_client import get_cli_client  # noqa: E402
-from render import write_html  # noqa: E402
+from slack_call import call_tool  # noqa: E402
 
 _ARCHIVE_RE = re.compile(r"/archives/([A-Z0-9]+)/p(\d+)")
 
@@ -47,14 +45,11 @@ def parse_permalink(url: str) -> tuple[str, str]:
     return channel_id, thread_ts or message_ts
 
 
-async def run(channel_id: str, message_ts: str, as_json: bool, html_path: str | None) -> None:
-    async with get_cli_client() as client:
-        result = await client.call_tool(
-            "slack_read_thread",
-            {"channel_id": channel_id, "message_ts": message_ts, "response_format": "detailed"},
-        )
-
-    raw_text = result.content[0].text if result.content else "{}"
+def run(channel_id: str, message_ts: str, as_json: bool, html_path: str | None) -> None:
+    raw_text = call_tool(
+        "slack_read_thread",
+        {"channel_id": channel_id, "message_ts": message_ts},
+    )
     payload = json.loads(raw_text)
 
     if as_json:
@@ -63,6 +58,7 @@ async def run(channel_id: str, message_ts: str, as_json: bool, html_path: str | 
 
     results = payload.get("messages", payload.get("results", raw_text))
     if html_path:
+        from render import write_html
         out = write_html(f"Slack message: {channel_id}/{message_ts}", results, Path(html_path))
         print(f"Wrote {out}", file=sys.stderr)
         return
@@ -83,7 +79,7 @@ def main() -> None:
     else:
         channel_id, message_ts = parse_permalink(args.target)
 
-    asyncio.run(run(channel_id, message_ts, args.json, args.html))
+    run(channel_id, message_ts, args.json, args.html)
 
 
 if __name__ == "__main__":

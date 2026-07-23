@@ -56,56 +56,80 @@ def _post(url: str, body: dict, session_id: str | None, timeout: float):
     return resp.status, out_sid, raw
 
 
-def call_tool(url: str, name: str, arguments: dict, timeout: float = 30.0) -> str:
-    """Call one MCP tool over the warm proxy and return the tool's text content.
-
-    Performs the minimal handshake (initialize -> initialized -> tools/call) each
-    invocation. Cheap over loopback; the expensive upstream session is held warm
-    by the daemon. Raises RawMCPError on protocol/transport failure so callers can
-    fall back to the full client.
-    """
-    try:
-        _, sid, init_raw = _post(
-            url,
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": _PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": "raw_mcp", "version": "1"},
-                },
-            },
-            None,
-            timeout,
-        )
-        init = _parse_sse(init_raw)
-        if not init or "result" not in init:
-            raise RawMCPError(f"initialize failed: {init_raw[:200]}")
-
-        # Required notification; server replies 202 with no body.
-        _post(url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid, timeout)
-
-        _, _, call_raw = _post(
-            url,
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": name, "arguments": arguments},
-            },
-            sid,
-            timeout,
-        )
-        res = _parse_sse(call_raw)
-    except urllib.error.URLError as exc:
-        raise RawMCPError(f"transport error: {exc}") from exc
-
-    if not res or "result" not in res:
-        err = (res or {}).get("error")
-        raise RawMCPError(f"tool call failed: {err or call_raw[:200]}")
-
-    content = res["result"].get("content") or []
+def _content_text(result: dict) -> str:
+    content = result.get("content") or []
     texts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
-    return "\n".join(texts) if texts else json.dumps(res["result"])
+    return "\n".join(texts) if texts else json.dumps(result)
+
+
+class RawSession:
+    """One MCP session over the warm proxy: handshake once, call many times.
+
+    Cheap over loopback; the expensive upstream session is held warm by the
+    daemon. Use as a context manager. Raises RawMCPError on protocol/transport
+    failure so callers can fall back to the full client."""
+
+    def __init__(self, url: str, timeout: float = 30.0):
+        self.url = url
+        self.timeout = timeout
+        self.sid: str | None = None
+
+    def __enter__(self) -> "RawSession":
+        try:
+            _, sid, init_raw = _post(
+                self.url,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": _PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {"name": "raw_mcp", "version": "1"},
+                    },
+                },
+                None,
+                self.timeout,
+            )
+            init = _parse_sse(init_raw)
+            if not init or "result" not in init:
+                raise RawMCPError(f"initialize failed: {init_raw[:200]}")
+            self.sid = sid
+            _post(self.url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid, self.timeout)
+        except urllib.error.URLError as exc:
+            raise RawMCPError(f"transport error: {exc}") from exc
+        return self
+
+    def __exit__(self, *exc) -> None:
+        # The daemon owns the warm upstream; nothing to tear down our side.
+        return None
+
+    def _request(self, method: str, params: dict, req_id: int) -> dict:
+        try:
+            _, _, raw = _post(
+                self.url,
+                {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params},
+                self.sid,
+                self.timeout,
+            )
+        except urllib.error.URLError as exc:
+            raise RawMCPError(f"transport error: {exc}") from exc
+        res = _parse_sse(raw)
+        if not res or "result" not in res:
+            err = (res or {}).get("error")
+            raise RawMCPError(f"{method} failed: {err or raw[:200]}")
+        return res["result"]
+
+    def call_tool(self, name: str, arguments: dict) -> str:
+        """Call one tool and return its joined text content."""
+        return _content_text(self._request("tools/call", {"name": name, "arguments": arguments}, 2))
+
+    def list_tools(self) -> list[dict]:
+        """Return the server's tool list ({name, description, inputSchema} each)."""
+        return self._request("tools/list", {}, 3).get("tools", [])
+
+
+def call_tool(url: str, name: str, arguments: dict, timeout: float = 30.0) -> str:
+    """Convenience: one-shot handshake + single tool call over the warm proxy."""
+    with RawSession(url, timeout) as session:
+        return session.call_tool(name, arguments)
